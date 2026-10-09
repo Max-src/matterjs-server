@@ -11,6 +11,7 @@ import {
     Environment,
     FabricId,
     FabricIndex,
+    Logger,
     MatterAggregateError,
     NodeId,
     ServerNode,
@@ -20,8 +21,11 @@ import { Ble, Fabric, FabricAuthority, FabricManager } from "@matter/main/protoc
 import { OtaProviderEndpoint } from "@matter/node/endpoints/ota-provider";
 import { applyCertContext, loadCertContext } from "./certContext.js";
 import { CameraControllerEndpoint } from "./ControllerCommandHandler.js";
+import { migrateLegacyCommissionedNodes, migrateLegacyControllerCredentials } from "./legacyStorageMigration.js";
 import { applyAutoSubscribe, PeerSettingsRepairMarker, repairRestoredPeers } from "./restoredPeers.js";
 import { ServerSoftwareUpdateManager } from "./ServerSoftwareUpdateManager.js";
+
+const logger = Logger.get("ControllerNode");
 
 // A controller joins fabrics, it does not serve groupcast, and the Groupcast listener would pull in the
 // Auxiliary ACL feature with it.
@@ -94,6 +98,8 @@ export async function createControllerNode(options: ControllerNodeOptions): Prom
     const adminNodeId = NodeId(112233); // TODO Remove when we switch to random IDs
     const certContext = await loadCertContext(environment, options.disableAutoSubscription ?? false);
 
+    await migrateLegacyControllerCredentials(environment, id);
+
     const node = await ServerNode.create(ControllerRootEndpoint, {
         environment,
         id,
@@ -149,6 +155,14 @@ export async function createControllerNode(options: ControllerNodeOptions): Prom
 
         if (certContext !== undefined) {
             await applyCertContext(node, fabricIndex, certContext);
+        }
+
+        const { nodes: migrated, endpoints, failed } = await migrateLegacyCommissionedNodes(node);
+        if (migrated > 0) {
+            logger.info(`Legacy storage migration: ${migrated} node(s), ${endpoints} endpoint(s) migrated`);
+        }
+        if (failed > 0) {
+            logger.warn(`${failed} peer(s) failed to migrate; the legacy data stays in place to retry on next start`);
         }
 
         if (options.peerSettingsRepair !== undefined) {
