@@ -420,6 +420,7 @@ export class MatterController {
             peerSettingsRepair: this.#config,
             disableAutoSubscription: this.#disableAutoSubscription,
             dcl: { acceptTestCertificates: this.#enableTestNetDcl, offline: this.#dclOffline },
+            legacyNodeImport: this.#config,
         });
     }
 

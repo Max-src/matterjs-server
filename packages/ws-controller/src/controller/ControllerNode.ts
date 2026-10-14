@@ -21,7 +21,11 @@ import { Ble, Fabric, FabricAuthority, FabricManager } from "@matter/main/protoc
 import { OtaProviderEndpoint } from "@matter/node/endpoints/ota-provider";
 import { applyCertContext, loadCertContext } from "./certContext.js";
 import { CameraControllerEndpoint } from "./ControllerCommandHandler.js";
-import { migrateLegacyCommissionedNodes, migrateLegacyControllerCredentials } from "./legacyStorageMigration.js";
+import {
+    LegacyNodeImportMarker,
+    migrateLegacyCommissionedNodes,
+    migrateLegacyControllerCredentials,
+} from "./legacyStorageMigration.js";
 import { applyAutoSubscribe, PeerSettingsRepairMarker, repairRestoredPeers } from "./restoredPeers.js";
 import { ServerSoftwareUpdateManager } from "./ServerSoftwareUpdateManager.js";
 
@@ -69,6 +73,9 @@ export interface ControllerNodeOptions {
      * and matter.js reads `offline` only when a service is created.
      */
     dcl?: { acceptTestCertificates: boolean; offline: boolean };
+
+    /** Where {@link importLegacyNodes} records that it has run. Omit and the import repeats on every start. */
+    legacyNodeImport?: LegacyNodeImportMarker;
 }
 
 export interface ControllerResources {
@@ -91,6 +98,33 @@ export interface ControllerNode extends ControllerResources {
     readonly fabric: Fabric;
 
     close(): Promise<void>;
+}
+
+/**
+ * Bring the nodes of a python-matter-server install across, once.
+ *
+ * The legacy source outlives the import — it is only retired later, and not at all when that fails — so
+ * without the marker every start imports it again. A peer decommissioned in the meantime is gone from the
+ * current storage but still listed in the legacy source, and would come back as a node nobody can reach.
+ */
+async function importLegacyNodes(node: ServerNode, scope: string, marker?: LegacyNodeImportMarker) {
+    if (marker?.hasImportedLegacyNodes(scope) === true) {
+        return;
+    }
+
+    const { found, nodes: migrated, endpoints, failed } = await migrateLegacyCommissionedNodes(node);
+    if (migrated > 0) {
+        logger.info(`Legacy storage migration: ${migrated} node(s), ${endpoints} endpoint(s) migrated`);
+    }
+    if (failed > 0) {
+        logger.warn(`${failed} peer(s) failed to migrate; the legacy data stays in place to retry on next start`);
+        return;
+    }
+    // Nothing found means no legacy data in this store, and a store that never had any must stay open to
+    // an import: this server is started on a fresh storage path before the data is injected into it.
+    if (found > 0) {
+        await marker?.markLegacyNodesImported(scope);
+    }
 }
 
 export async function createControllerNode(options: ControllerNodeOptions): Promise<ControllerNode> {
@@ -157,13 +191,7 @@ export async function createControllerNode(options: ControllerNodeOptions): Prom
             await applyCertContext(node, fabricIndex, certContext);
         }
 
-        const { nodes: migrated, endpoints, failed } = await migrateLegacyCommissionedNodes(node);
-        if (migrated > 0) {
-            logger.info(`Legacy storage migration: ${migrated} node(s), ${endpoints} endpoint(s) migrated`);
-        }
-        if (failed > 0) {
-            logger.warn(`${failed} peer(s) failed to migrate; the legacy data stays in place to retry on next start`);
-        }
+        await importLegacyNodes(node, id, options.legacyNodeImport);
 
         if (options.peerSettingsRepair !== undefined) {
             await repairRestoredPeers(node, id, options.peerSettingsRepair);
