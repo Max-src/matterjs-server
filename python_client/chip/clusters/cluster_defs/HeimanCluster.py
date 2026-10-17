@@ -63,10 +63,30 @@ class HeimanCluster(Cluster):
             def descriptor(cls) -> ClusterObjectDescriptor:
                 return ClusterObjectDescriptor(
                     Fields=[
-                        ClusterObjectFieldDescriptor(Label="mutingTime", Tag=0, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="mutingTime", Tag=0, Type=uint),
                     ])
 
-            mutingTime: typing.Optional[uint] = None
+            mutingTime: uint = 0
+
+        @dataclass
+        class SirenActivate(ClusterCommand):
+            cluster_id: typing.ClassVar[int] = 0x120BFC01
+            command_id: typing.ClassVar[int] = 0x00000001
+            is_client: typing.ClassVar[bool] = True
+            response_type: typing.ClassVar[typing.Optional[str]] = None
+
+            @ChipUtility.classproperty
+            def descriptor(cls) -> ClusterObjectDescriptor:
+                return ClusterObjectDescriptor(
+                    Fields=[
+                        ClusterObjectFieldDescriptor(Label="sirenType", Tag=0, Type=uint),
+                        ClusterObjectFieldDescriptor(Label="volume", Tag=1, Type=uint),
+                        ClusterObjectFieldDescriptor(Label="duration", Tag=2, Type=uint),
+                    ])
+
+            sirenType: uint = 0
+            volume: uint = 0
+            duration: uint = 0
 
     class Attributes:
         @dataclass
