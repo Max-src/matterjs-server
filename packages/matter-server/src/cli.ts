@@ -139,6 +139,49 @@ export function parseListenAddressList(value: string): string[] {
         .filter(address => address !== "");
 }
 
+/** Platforms whose noble bindings (WinRT, CoreBluetooth) use the system adapter and ignore the HCI ID. */
+const PLATFORMS_WITHOUT_HCI_ID: ReadonlySet<NodeJS.Platform> = new Set(["win32", "darwin"]);
+
+/**
+ * Parses a `--bluetooth-adapter` / `BLUETOOTH_ADAPTER` value: an HCI ID, or a boolean so the environment can enable BLE
+ * without an ID (`true`) or leave it off (`false` or empty). A number is always an HCI ID, so `1` means hci1.
+ */
+export function parseBluetoothAdapterOption(value: string): number | boolean {
+    const normalized = value.trim().toLowerCase();
+    if (/^\d+$/.test(normalized)) {
+        return Number(normalized);
+    }
+    if (["true", "yes", "on"].includes(normalized)) {
+        return true;
+    }
+    if (["", "false", "no", "off"].includes(normalized)) {
+        return false;
+    }
+    throw new InvalidArgumentError(`Expected an HCI ID or true/false, got: "${value}"`);
+}
+
+/**
+ * Resolves `--bluetooth-adapter` to an HCI ID, or `null` when BLE stays off. `true` means BLE without an ID: given as
+ * the bare flag or as `BLUETOOTH_ADAPTER=true`. Only Windows and macOS accept that and use 0, which their noble
+ * bindings ignore.
+ *
+ * @throws InvalidArgumentError when the ID is missing on any other platform
+ */
+export function bluetoothAdapterFrom(value: number | boolean | undefined, platform: NodeJS.Platform): number | null {
+    if (value === undefined || value === false) {
+        return null;
+    }
+    if (value !== true) {
+        return value;
+    }
+    if (!PLATFORMS_WITHOUT_HCI_ID.has(platform)) {
+        throw new InvalidArgumentError(
+            "--bluetooth-adapter needs the HCI ID of the adapter (e.g. 0 for hci0). Only Windows and macOS accept it without an ID",
+        );
+    }
+    return 0;
+}
+
 function collectAddresses(value: string, previous: string[]): string[] {
     return previous.concat(value);
 }
@@ -257,8 +300,11 @@ export function parseCliArgs(argv?: string[]): CliOptions {
             ).env("CERTIFICATES_DIR"),
         )
         .addOption(
-            new Option("--bluetooth-adapter <id>", "Bluetooth adapter HCI ID (e.g., 0 for hci0)")
-                .argParser(parseIntOption)
+            new Option(
+                "--bluetooth-adapter [id]",
+                "Enable local BLE with this Bluetooth adapter HCI ID (e.g., 0 for hci0); the ID is optional on Windows and macOS",
+            )
+                .argParser(parseBluetoothAdapterOption)
                 .env("BLUETOOTH_ADAPTER"),
         )
         .addOption(
@@ -372,6 +418,14 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         program.error("error: --dcl-offline needs the DCL seed, so it cannot be combined with --disable-dcl-seed");
     }
 
+    let bluetoothAdapter: number | null = null;
+    try {
+        bluetoothAdapter = bluetoothAdapterFrom(opts.bluetoothAdapter, process.platform);
+    } catch (error) {
+        if (!(error instanceof InvalidArgumentError)) throw error;
+        program.error(`error: ${error.message}`);
+    }
+
     // Warn about deprecated options if used
     for (const [key, flag] of Object.entries(DEPRECATED_OPTIONS)) {
         if (opts[key] !== undefined && opts[key] !== false) {
@@ -427,7 +481,7 @@ export function parseCliArgs(argv?: string[]): CliOptions {
         dclOffline: opts.dclOffline,
         revocationSetsDir: opts.revocationSetsDir ?? null,
         certificatesDir: opts.certificatesDir ?? null,
-        bluetoothAdapter: opts.bluetoothAdapter ?? null,
+        bluetoothAdapter,
         bleProxy: opts.bleProxy,
         disableOta: opts.disableOta,
         otaProviderDir: opts.otaProviderDir ?? null,
