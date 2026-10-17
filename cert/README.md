@@ -60,15 +60,20 @@ devices and the server find each other over mDNS on that interface.
     docker run --rm hello-world
     ```
 
-5. Memory. Building the matter.js monorepo peaks at about 1.4 GB, the server at about 0.8 GB. With 4 GB of RAM this
-   fits; with less, add swap and set `GOMEMLIMIT` (read by the native TypeScript type checker the build runs), which
-   cut the matter.js peak to about 1.1 GB in a measurement, at a slightly longer build time:
+5. Memory. Building the matter.js monorepo peaks at about 1.4 GB, the server at about 0.8 GB. Set `GOMEMLIMIT` on
+   every Raspberry Pi; the native TypeScript type checker the build runs reads it, and it cut the matter.js peak to
+   about 1.1 GB in a measurement at a slightly longer build time, which leaves room for the OS and Docker:
+
+    ```bash
+    echo 'export GOMEMLIMIT=1GiB' >> ~/.bashrc && export GOMEMLIMIT=1GiB
+    ```
+
+    With less than 4 GB of RAM, also add swap:
 
     ```bash
     sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile
     sudo mkswap /swapfile && sudo swapon /swapfile
     echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-    export GOMEMLIMIT=1GiB
     ```
 
 6. Check out and run, either a release tag (`git tag -l 'v*'` lists them) or `main`:
@@ -87,6 +92,23 @@ devices and the server find each other over mDNS on that interface.
 The first run pulls the images and builds matter.js and takes long; the whole suite takes about 13 minutes on the CI
 arm64 runner and longer on a Raspberry Pi. No other Matter device on the network should advertise with the default
 passcode or discriminator 3840, and only one cert run may be active at a time.
+
+### Updating to another server version
+
+To move an existing checkout to a new release (or any other tag or branch):
+
+```bash
+cd matterjs-server
+git fetch --tags origin
+git checkout v1.5.1   # the new tag, or for example `git checkout main && git pull`
+npm ci
+npm run cert -- --device chip-local
+```
+
+`npm ci` installs the dependencies of that version, including its matter.js. `npm run cert` then rebuilds the server
+and moves `.cert/matter.js` to the matter.js version the new server uses, installs and builds it there, and runs that
+version's suite; `.cert` does not need to be deleted. Delete `.cert` only to free disk space, the next run clones
+matter.js again.
 
 ## Server configuration
 
