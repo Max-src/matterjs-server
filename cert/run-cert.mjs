@@ -68,14 +68,20 @@ function defaultRef() {
     const pkg = JSON.parse(readFileSync(PACKAGE_JSON, "utf8"));
     const version = pkg.dependencies?.["@matter/main"];
     if (typeof version !== "string") fail("@matter/main is not a dependency of packages/matter-server");
-    return DEV_VERSION_PATTERN.exec(version)?.[1] ?? `v${version}`;
+    return { ref: DEV_VERSION_PATTERN.exec(version)?.[1] ?? `v${version}`, source: `@matter/main ${version} of the server` };
 }
 
 function resolveRef(options) {
-    const ref = options.ref ?? (process.env.MATTERJS_REF || defaultRef());
+    const { ref, source } =
+        options.ref !== undefined
+            ? { ref: options.ref, source: "--matterjs-ref" }
+            : process.env.MATTERJS_REF
+              ? { ref: process.env.MATTERJS_REF, source: "MATTERJS_REF" }
+              : defaultRef();
     if (!REF_PATTERN.test(ref) || ref.includes("..") || ref.endsWith("/") || ref.endsWith(".lock")) {
         fail(`invalid matter.js ref "${ref}"`);
     }
+    console.error(`cert: matter.js ref ${ref} (${source})`);
     return ref;
 }
 
@@ -159,6 +165,10 @@ let steps = buildSteps(options, ref, platformEnv(options.device));
 if (process.env.RUN_CERT_TEST_SOURCE_ONLY) {
     steps = steps.filter(({ step }) => step === "clone" || step.startsWith("fetch") || step === "checkout");
 }
+if (process.env.RUN_CERT_TEST_STEPS) {
+    const only = process.env.RUN_CERT_TEST_STEPS.split(",");
+    steps = steps.filter(({ step }) => only.includes(step));
+}
 
 if (options.dryRun) {
     for (const step of steps) console.log(JSON.stringify(step));
@@ -171,9 +181,17 @@ const NPM_INVOCATION_ENV =
     /^(npm_lifecycle_|npm_package_|npm_command$|npm_execpath$|npm_node_execpath$|npm_config_local_prefix$|npm_config_user_agent$|INIT_CWD$)/;
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !NPM_INVOCATION_ENV.test(key)));
 
+function reportEvidence() {
+    console.error(
+        `cert: evidence in ${resolve(CERT_DIR, "evidence")}, one <timestamp>-<test case> directory per test case ` +
+            "with result.json and the controller and device logs",
+    );
+}
+
 for (const { step, cwd, command, args, env, optional } of steps) {
     console.error(`cert: [${step}] ${command} ${args.join(" ")} (in ${cwd})`);
     const result = spawnSync(command, args, { cwd, stdio: "inherit", env: { ...baseEnv, ...env } });
+    if (step === "test") reportEvidence();
     if (result.status !== 0) {
         const code = result.status ?? 1;
         const reason = result.error ? result.error.message : `exit code ${code}`;

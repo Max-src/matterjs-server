@@ -11,13 +11,15 @@ npm run cert -- [--tc TC-IDM-2.1] [--matterjs-ref <ref>] [--device chip-local|ma
 Steps: build this repo, clone (or fetch) matter.js into `.cert/matter.js` (git-ignored), check out the ref, `npm ci && npm run build` there, then run the tests. The exit code is the test exit code; a failing step prints its name and exits with that step's exit code, or with 1 when it was killed by a signal or could not start. An invalid argument exits with 2 before any step runs. Nested steps get your environment without the variables `npm run` sets about its own invocation (`npm_lifecycle_*`, `npm_package_*`, `npm_config_local_prefix`, `npm_config_user_agent` and a few more); your other `npm_config_*` settings pass. `PATH` keeps the `node_modules/.bin` entries `npm run` added for this repo.
 
 - `--tc <id>`: run only `test/cert/<id>.test.ts` (default: the whole suite). The id is `TC-` followed by letters, digits, `.`, `-` or `_`, for example `TC-IDM-2.1`.
-- `--matterjs-ref <ref>`: matter.js branch, tag or commit to test. Overrides the `MATTERJS_REF` environment variable. Default: the commit of the pinned `@matter/main` dev version, or the tag `v<version>` for an exact release version. A version range (`^0.17.0`) is not a valid ref and is refused; pass `--matterjs-ref` then.
+- `--matterjs-ref <ref>`: matter.js branch, tag or commit to test. Overrides the `MATTERJS_REF` environment variable. Default: the commit of the pinned `@matter/main` dev version, or the tag `v<version>` for an exact release version. The first output line names the ref and where it comes from, for example `cert: matter.js ref d02c422c9 (@matter/main 0.18.0-alpha.0-20261017-d02c422c9 of the server)`. A version range (`^0.17.0`) is not a valid ref and is refused; pass `--matterjs-ref` then.
 - `--dry-run`: print the planned steps as one JSON object per line and run nothing. It still checks the arguments, the ref and the platform, and on macOS with `chip-local` that `MATTER_CERT_APP_DIR` is set.
 - `--device <chip-local|matterjs>`: the test devices the suite commissions (default `chip-local`). `chip-local` runs the CHIP example apps; `matterjs` runs matter.js test devices and needs no CHIP apps, so neither the `cert-bins` image nor `MATTER_CERT_APP_DIR`.
 - `MATTER_CERT_APP_DIR` (macOS only, required with `chip-local`): directory with the locally built CHIP example apps.
-- Evidence is written to `.cert/evidence`.
+- Evidence is written to `.cert/evidence`, one `<timestamp>-<test case>` directory per test case with `result.json`
+  (verdict, steps and checks) and the logs: `controller-dut.log` (the server) and `device-*.log` (the test devices). The
+  last output line of a run names that directory. In CI the same files are the `cert-evidence-<device>` artifact.
 - The checkout always ends detached at the current remote state of the ref (branch, tag or commit), discarding changes to tracked files in `.cert/matter.js`; untracked files stay. A ref of 7 to 40 lowercase hex characters is taken as a commit sha: all branches and tags are fetched, and tags moved upstream are updated. A short commit sha must be reachable from a remote branch or tag; only a full 40-character sha can be fetched on its own.
-- `RUN_CERT_TEST_PLATFORM=linux|darwin`, `RUN_CERT_TEST_DIR`, `RUN_CERT_TEST_MATTERJS_URL`, `RUN_CERT_TEST_PACKAGE_JSON` and `RUN_CERT_TEST_SOURCE_ONLY=1` are for testing the runner only.
+- `RUN_CERT_TEST_PLATFORM=linux|darwin`, `RUN_CERT_TEST_DIR`, `RUN_CERT_TEST_MATTERJS_URL`, `RUN_CERT_TEST_PACKAGE_JSON`, `RUN_CERT_TEST_SOURCE_ONLY=1` and `RUN_CERT_TEST_STEPS=<step,...>` are for testing the runner only.
 
 Prerequisites: Docker running for every cert run, for the test harness containers; on Linux with `chip-local` the CHIP binaries are also extracted from the `cert-bins` image, which exists for `linux/arm64` only, so this needs an arm64 host (`cert/run-cert.mjs` sets `MATTER_CHIP_PLATFORM=linux/arm64`). On macOS with `chip-local` the locally built CHIP apps in `MATTER_CERT_APP_DIR` run as host processes.
 
@@ -136,6 +138,28 @@ options:
 
 Besides `read`, `subscribe` and the commissioning commands, the adapter uses `start_listening`,
 `enable_auto_subscription` and the OTA image upload endpoint `POST /ota-upload/<upload_id>`.
+
+## Starting the server for manual tests
+
+For test cases run by hand (for example with the dashboard or the CHIP test scripts), build and start the server
+yourself. Use a storage directory of its own, so a test fabric never mixes with your normal one:
+
+```bash
+npm run build
+npm run server -- \
+    --storage-path ~/matter-cert-data \
+    --enable-test-net-dcl \
+    --log-level debug \
+    --primary-interface eth0
+```
+
+- The WebSocket API and the dashboard are on port 5580 (`http://<host>:5580`); `--port` and `--listen-address` change
+  that.
+- Add `--disable-auto-subscription` if the test checks which requests the controller sends; the server then neither
+  subscribes on its own nor sends background traffic.
+- Add `--dcl-offline` if the test must not depend on the DCL; attestation then uses the bundled DCL data.
+- Add `--revocation-sets-dir <dir>` if the test needs device attestation revocation sets.
+- Delete the storage directory to start again with a new fabric.
 
 ## CI
 
