@@ -17,7 +17,7 @@ This page shows a detailed overview of the changes between versions without the 
     - The dashboard's camera view uses the new camera API
         - Talks back to cameras that support two-way audio (needs HTTPS or localhost for the microphone)
 - Enhancement: `nodes_changed` events carry a detail naming the node they concern (`reason`, `nodeId`, and `attributeKey` for attribute updates). A listener interested in one node can skip events for other nodes. Listeners that take no argument are unaffected. `addEventListener` only accepts the known event names, so TypeScript code that passes a `string` must narrow it first
-- Enhancement: Update matter.js to the latest 0.18.0 nightly
+- Enhancement: Update matter.js to 0.18.0
     - Adds support for Matter 1.6.1 (including Python client)
 - Enhancement: Finishes the migration to the new matter.js controller API
 - Enhancement: `send_webrtc_provider_command` also relays `ProvideAnswer` and `ProvideIceCandidates`
@@ -74,6 +74,9 @@ This page shows a detailed overview of the changes between versions without the 
 - Fix: The Dashboard shows the data type of custom cluster attributes and of attributes of derived clusters (Mode clusters, Bridged Device Basic Information) instead of `unknown`
 - Fix: `webrtc_callback` events the camera sends while `send_webrtc_provider_command` is still running are no longer lost
 - Fix: A re-offer (`ProvideOffer` naming an existing session) through `send_webrtc_provider_command` no longer ends the session it renegotiates
+- Fix: At start, the server ends the WebRTC sessions a camera still holds for it from an earlier run, so they no longer keep the camera's streams busy. This also ends sessions opened with `device_command` `ProvideOffer` or `SolicitOffer` that the camera lists when the server checks for leftover sessions; open sessions with `send_webrtc_provider_command` instead
+- Fix: A new WebRTC session with `turns:` or `stuns:` ICE servers through `send_webrtc_provider_command` no longer fails on a camera that has no time set, for example after a reboot: when the camera refuses the offer, the server sets the camera's time and sends the offer once more
+- Fix: The camera's answer to an offer sent with `send_webrtc_provider_command` uses only the directions that offer allows, so the browser accepts it also when the camera answers `sendrecv` to a receive-only offer
 - Fix: `device_command` with `EndSession` updates the server's session records for that camera only, and a WebRTC callback with an invalid endpoint id no longer blocks the event for other listeners
 - Fix: A command sent before the controller finished starting fails with the SDK stack error code instead of a generic error
 - Fix: The server's debug log masks Wi-Fi passphrases, Thread datasets, setup codes, credential material in `device_command` requests, TURN credentials and SDP ICE credentials, and no longer logs the `open_commissioning_window` response. `device_command` responses are still logged in full. The TypeScript client logs very long strings as their length
