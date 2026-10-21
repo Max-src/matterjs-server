@@ -7,7 +7,7 @@ This page shows a detailed overview of the changes between versions without the 
 	## **WORK IN PROGRESS**
 -->
 
-## **WORK IN PROGRESS**
+## 1.5.2 (2026-10-21)
 
 - Fix: Events with a delta timestamp are processed with the calculated device time again instead of the time the server received them
 
