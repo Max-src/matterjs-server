@@ -7,6 +7,10 @@ This page shows a detailed overview of the changes between versions without the 
 	## **WORK IN PROGRESS**
 -->
 
+## **WORK IN PROGRESS**
+
+- Fix: Python client: an event subscriber that raises an error no longer ends the connection; the error is logged and the other subscribers still receive the event
+
 ## 1.5.2 (2026-10-21)
 
 - Fix: Events with a delta timestamp are processed with the calculated device time again instead of the time the server received them
