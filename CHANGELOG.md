@@ -7,6 +7,10 @@ This page shows a detailed overview of the changes between versions without the 
 	## **WORK IN PROGRESS**
 -->
 
+## **WORK IN PROGRESS**
+
+- Fix: `node_added`, `node_removed`, `endpoint_added` and `endpoint_removed` are no longer dropped when a client reads too slowly
+
 ## 1.5.2 (2026-10-21)
 
 - Fix: Events with a delta timestamp are processed with the calculated device time again instead of the time the server received them
