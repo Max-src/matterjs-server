@@ -9,6 +9,7 @@ This page shows a detailed overview of the changes between versions without the 
 
 ## **WORK IN PROGRESS**
 
+- Enhancement: (@lanthaler) Adds the vendor clusters for the Aqara Led Strip T2 to configure the music sync feature to the custom cluster definitions
 - Fix: Fabric label changes are sent to the nodes in the background and a few at a time, instead of to all nodes at once while the client waits
 
 ## 1.5.0 (2026-10-20)
