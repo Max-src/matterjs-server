@@ -15,10 +15,9 @@ import {
     LegacyServerFile,
     Logger,
     parseBigIntAwareJson,
-    toBigIntAwareJson,
 } from "@matter-server/ws-controller";
 import { MatterError } from "@matter/main";
-import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { access, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { DEFAULT_FABRIC_ID, DEFAULT_VENDOR_ID } from "../cli.js";
 import { ChipConfigData } from "./index.js";
@@ -28,10 +27,10 @@ import type { OperationalCredentials } from "./types.js";
  * Legacy data loader for Python Matter Server storage files.
  *
  * Loads and provides access to data from a Python Matter Server installation:
- * - chip.json: Fabric configuration, certificates, sessions
- * - <compressedNodeId>.json: Node-specific data file
+ * - chip.json: Fabric configuration and certificates of every fabric
+ * - <compressedFabricId>.json: Node data of one fabric
  *
- * Only supports single fabric configurations (fabric index 1).
+ * The fabric is chosen by vendor ID and fabric ID.
  */
 
 const logger = Logger.get("LegacyDataLoader");
@@ -122,31 +121,13 @@ function determineLegacyServerId(fabricId: number | bigint, vendorId: number, is
     return computeServerId(fabricId, vendorId);
 }
 
-/**
- * Legacy nodes the controller does not know.
- *
- * Retiring the source is only safe once this is empty: comparing counts instead would let a device
- * commissioned since make up the numbers for one that never migrated, and the source holds that one's
- * only remaining copy.
- */
-export function missingLegacyNodes(
-    serverFile: LegacyServerFile | undefined,
-    knownNodeIds: Iterable<{ toString(): string }>,
-): string[] {
-    const known = new Set<string>();
-    for (const nodeId of knownNodeIds) {
-        known.add(String(nodeId));
-    }
-    return Object.keys(serverFile?.nodes ?? {}).filter(nodeId => !known.has(nodeId));
-}
-
 /** Result of loading legacy data */
 export interface LegacyData {
     /** Chip config data (fabric certs, sessions, etc.) */
     chipConfig?: ChipConfigData;
     /** Server file data (vendor info, nodes, etc.) */
     serverFile?: LegacyServerFile;
-    /** Fabric configuration extracted from chip.json (fabric index 1) */
+    /** Configuration of the chosen fabric, extracted from chip.json */
     fabricConfig?: LegacyFabricConfigData;
     /** Operational credentials (CA/ICA keys and certs) from credential set 1 */
     operationalCredentials?: OperationalCredentials;
@@ -161,6 +142,8 @@ export interface LegacyData {
     serverId?: string;
     /** Whether any legacy data was found */
     hasData: boolean;
+    /** The main node file of the fabric exists but could not be read, and no backup stood in for it */
+    serverFileUnreadable?: boolean;
     /** Error message if loading failed */
     error?: string;
 }
@@ -339,15 +322,21 @@ export async function loadLegacyData(
                     logger.debug(`No server data file found at ${filePath}`);
                 }
                 // Continue to try backup
-            } else if (err instanceof SyntaxError) {
-                // JSON parse error - log and try backup
-                logger.error(`Error parsing server file ${fileLabel}: ${err.message}`);
-                // Continue to try backup
             } else {
-                logger.error(`Error loading server file ${fileLabel}:`, err);
-                // Continue to try backup
+                if (!isBackup) {
+                    result.serverFileUnreadable = true;
+                }
+                if (err instanceof SyntaxError) {
+                    logger.error(`Error parsing server file ${fileLabel}: ${err.message}`);
+                } else {
+                    logger.error(`Error loading server file ${fileLabel}:`, err);
+                }
             }
         }
+    }
+    if (result.serverFile !== undefined) {
+        // The backup stood in for the unreadable main file, so the nodes are known after all.
+        result.serverFileUnreadable = undefined;
     }
     // Server data file is optional, don't fail if neither exists
 
@@ -369,72 +358,6 @@ export async function hasLegacyData(storagePath: string): Promise<boolean> {
     }
 }
 
-/**
- * Save the legacy server file back to disk.
- *
- * Backup strategy depends on whether the main file was successfully loaded:
- * - If loadedFromMainFile=true: delete old backup → rename main to backup → write new main
- * - If loadedFromMainFile=false: just write new main (backup is preserved since main was broken)
- *
- * @param env Environment for crypto access
- * @param storagePath Path to the storage directory
- * @param fabricConfig Fabric configuration (needed to compute the file name)
- * @param serverFile The server file data to save
- * @param loadedFromMainFile Whether the data was loaded from the main file (vs backup)
- */
-export async function saveLegacyServerFile(
-    env: Environment,
-    storagePath: string,
-    fabricConfig: LegacyFabricConfigData,
-    serverFile: LegacyServerFile,
-    loadedFromMainFile = true,
-): Promise<void> {
-    const crypto = env.get(Crypto);
-    const compressedFabricId = await computeCompressedNodeId(crypto, fabricConfig.fabricId, fabricConfig.rootPublicKey);
-    const serverFileName = `${compressedFabricId}.json`;
-    const serverFilePath = join(storagePath, serverFileName);
-    const backupFilePath = `${serverFilePath}.backup`;
-
-    if (loadedFromMainFile) {
-        // The main file was valid - rotate: delete old backup → rename main to backup → write new main
-        try {
-            await access(serverFilePath);
-            // Delete existing backup if present
-            try {
-                await unlink(backupFilePath);
-                logger.debug(`Deleted old backup: ${serverFileName}.backup`);
-            } catch (error) {
-                const err = error as NodeJS.ErrnoException;
-                if (err.code === "ENOENT") {
-                    // No existing backup, that's fine
-                    logger.debug(`No existing backup to delete for ${serverFileName}.backup`);
-                } else {
-                    logger.warn(
-                        `Failed to delete existing backup ${serverFileName}.backup (code=${err.code}): ${err.message}`,
-                    );
-                    throw error;
-                }
-            }
-            // Rename the current main file to backup
-            await rename(serverFilePath, backupFilePath);
-            logger.debug(`Renamed ${serverFileName} to ${serverFileName}.backup`);
-        } catch {
-            // Main file doesn't exist yet (new installation), no backup needed
-        }
-    } else {
-        // The main file was broken, we loaded from backup - just write new main, keep backup intact
-        logger.debug(`Keeping existing backup intact (main file was corrupted)`);
-    }
-
-    const content = toBigIntAwareJson(serverFile, 2);
-    await writeFile(serverFilePath, content, "utf-8");
-
-    const nodeCount = Object.keys(serverFile.nodes).length;
-    logger.info(
-        `Saved server data to ${serverFileName}: ${nodeCount} node(s), last_node_id=${serverFile.last_node_id}`,
-    );
-}
-
 /** Suffix given to python-matter-server files once their contents live in the current storage. */
 const MIGRATED_SUFFIX = ".migrated";
 
@@ -451,14 +374,14 @@ async function fileExists(path: string) {
  * Retire the python-matter-server source files after their contents have been imported.
  *
  * Renamed rather than deleted so an operator can still inspect or recover them. Renaming is what makes
- * the import one-shot: {@link loadLegacyData} looks for exact names, so a retired file is not found and
- * the next start has nothing to import.
+ * the import one-shot: {@link loadLegacyData} looks for exact names, so the node data of a retired fabric is
+ * not found again.
  */
 export async function retireLegacyFiles(
     env: Environment,
     storagePath: string,
     fabricConfig: LegacyFabricConfigData,
-    chipConfig?: ChipConfigData,
+    chipConfig?: Pick<ChipConfigData, "getFabricIndices" | "getFabricConfig">,
 ): Promise<string[]> {
     const crypto = env.get(Crypto);
     const serverFileNameOf = async (config: LegacyFabricConfigData) =>
@@ -484,10 +407,9 @@ export async function retireLegacyFiles(
     await retire(serverFileName);
     await retire(`${serverFileName}.backup`);
 
-    // chip.json holds the credentials of every fabric, and each one is imported by its own server
-    // instance. Retiring it while another fabric still has to import leaves that fabric no credentials,
-    // and every device on it unreachable. Only that fabric's own retired file proves it is past that: it
-    // can be listed in chip.json with no node file of its own, and a retired fabric stays listed there.
+    // chip.json holds the credentials of every fabric. A fabric whose node file is still in place has yet to be
+    // migrated by a server started with its vendor and fabric ID, and needs them. A fabric without a node file
+    // has no nodes to migrate.
     const pendingFabrics = new Array<string>();
     for (const fabricIndex of chipConfig?.getFabricIndices() ?? []) {
         const other = chipConfig?.getFabricConfig(fabricIndex);
@@ -495,10 +417,10 @@ export async function retireLegacyFiles(
             continue;
         }
         const otherFileName = await serverFileNameOf(other);
-        const retiredElsewhere =
-            (await fileExists(join(storagePath, `${otherFileName}${MIGRATED_SUFFIX}`))) ||
-            (await fileExists(join(storagePath, `${otherFileName}.backup${MIGRATED_SUFFIX}`)));
-        if (!retiredElsewhere) {
+        if (
+            (await fileExists(join(storagePath, otherFileName))) ||
+            (await fileExists(join(storagePath, `${otherFileName}.backup`)))
+        ) {
             pendingFabrics.push(otherFileName);
         }
     }
@@ -511,8 +433,7 @@ export async function retireLegacyFiles(
     } else {
         await retire("chip.json");
     }
-    // A file still under its original name is one the next start imports again, so the retirement is not
-    // done and the caller must not drop the storage the import is recognised by.
+    // A file still under its original name is read again on the next start, which retries the retirement.
     if (failed.length > 0) {
         throw new MatterError(`Could not retire legacy data file(s): ${failed.join(", ")}`);
     }

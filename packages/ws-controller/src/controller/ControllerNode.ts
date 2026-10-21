@@ -22,14 +22,12 @@ import { OtaProviderEndpoint } from "@matter/node/endpoints/ota-provider";
 import { applyCertContext, loadCertContext } from "./certContext.js";
 import { CameraControllerEndpoint } from "./ControllerCommandHandler.js";
 import {
-    LegacyNodeImportMarker,
+    cleanupLegacyStorage,
     migrateLegacyCommissionedNodes,
     migrateLegacyControllerCredentials,
 } from "./legacyStorageMigration.js";
 import { applyAutoSubscribe, PeerSettingsRepairMarker, repairRestoredPeers } from "./restoredPeers.js";
 import { ServerSoftwareUpdateManager } from "./ServerSoftwareUpdateManager.js";
-
-const logger = Logger.get("ControllerNode");
 
 // A controller joins fabrics, it does not serve groupcast, and the Groupcast listener would pull in the
 // Auxiliary ACL feature with it.
@@ -50,6 +48,8 @@ function parseVersionToNumber(version: string): number {
     const patch = parseInt(parts[2] ?? "0", 10);
     return major * 10000 + minor * 100 + patch;
 }
+const logger = Logger.get("ControllerNode");
+
 export interface ControllerNodeOptions {
     environment: Environment;
     id: string;
@@ -65,6 +65,15 @@ export interface ControllerNodeOptions {
      */
     peerSettingsRepair?: PeerSettingsRepairMarker;
 
+    /**
+     * Migrate a controller storage that a matter.js controller before 0.16 wrote. Leave it off when Python Matter
+     * Server data is present, because its migration writes the current layout itself.
+     */
+    migrateLegacyStorage?: boolean;
+
+    /** Set when this start migrated the Python Matter Server data, so the legacy node data is removed entirely. */
+    legacyNodeDataObsolete?: boolean;
+
     /** Applied to every stored peer on each build, in both directions. Defaults to false. */
     disableAutoSubscription?: boolean;
 
@@ -73,9 +82,6 @@ export interface ControllerNodeOptions {
      * and matter.js reads `offline` only when a service is created.
      */
     dcl?: { acceptTestCertificates: boolean; offline: boolean };
-
-    /** Where {@link importLegacyNodes} records that it has run. Omit and the import repeats on every start. */
-    legacyNodeImport?: LegacyNodeImportMarker;
 }
 
 export interface ControllerResources {
@@ -100,39 +106,13 @@ export interface ControllerNode extends ControllerResources {
     close(): Promise<void>;
 }
 
-/**
- * Bring the nodes of a python-matter-server install across, once.
- *
- * The legacy source outlives the import — it is only retired later, and not at all when that fails — so
- * without the marker every start imports it again. A peer decommissioned in the meantime is gone from the
- * current storage but still listed in the legacy source, and would come back as a node nobody can reach.
- */
-async function importLegacyNodes(node: ServerNode, scope: string, marker?: LegacyNodeImportMarker) {
-    if (marker?.hasImportedLegacyNodes(scope) === true) {
-        return;
-    }
-
-    const { found, nodes: migrated, endpoints, failed } = await migrateLegacyCommissionedNodes(node);
-    if (migrated > 0) {
-        logger.info(`Legacy storage migration: ${migrated} node(s), ${endpoints} endpoint(s) migrated`);
-    }
-    if (failed > 0) {
-        logger.warn(`${failed} peer(s) failed to migrate; the legacy data stays in place to retry on next start`);
-        return;
-    }
-    // Nothing found means no legacy data in this store, and a store that never had any must stay open to
-    // an import: this server is started on a fresh storage path before the data is injected into it.
-    if (found > 0) {
-        await marker?.markLegacyNodesImported(scope);
-    }
-}
-
 export async function createControllerNode(options: ControllerNodeOptions): Promise<ControllerNode> {
     const { environment, id, adminVendorId, adminFabricId, adminFabricLabel, serverVersion } = options;
     const adminNodeId = NodeId(112233); // TODO Remove when we switch to random IDs
     const certContext = await loadCertContext(environment, options.disableAutoSubscription ?? false);
-
-    await migrateLegacyControllerCredentials(environment, id);
+    if (options.migrateLegacyStorage) {
+        await migrateLegacyControllerCredentials(environment, id);
+    }
 
     const node = await ServerNode.create(ControllerRootEndpoint, {
         environment,
@@ -191,7 +171,16 @@ export async function createControllerNode(options: ControllerNodeOptions): Prom
             await applyCertContext(node, fabricIndex, certContext);
         }
 
-        await importLegacyNodes(node, id, options.legacyNodeImport);
+        if (options.migrateLegacyStorage) {
+            const { nodes, endpoints, failed } = await migrateLegacyCommissionedNodes(node);
+            if (nodes > 0) {
+                logger.info(`Legacy storage migration: ${nodes} node(s), ${endpoints} endpoint(s) migrated`);
+            }
+            if (failed > 0) {
+                logger.warn(`${failed} legacy node(s) failed to migrate; their data stays in the storage`);
+            }
+        }
+        await cleanupLegacyStorage(node, options.legacyNodeDataObsolete);
 
         if (options.peerSettingsRepair !== undefined) {
             await repairRestoredPeers(node, id, options.peerSettingsRepair);

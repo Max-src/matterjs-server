@@ -4,13 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
-    computeCompressedNodeId,
-    Crypto,
-    Environment,
-    LegacyFabricConfigData,
-    LegacyServerFile,
-} from "@matter-server/ws-controller";
+import { computeCompressedNodeId, Crypto, Environment, LegacyFabricConfigData } from "@matter-server/ws-controller";
 import { Bytes } from "@matter/main";
 import { CertificateAuthority } from "@matter/main/protocol";
 import { FabricId, NodeId } from "@matter/main/types";
@@ -22,9 +16,7 @@ import {
     ChipConfigData,
     hasLegacyData,
     loadLegacyData,
-    missingLegacyNodes,
     retireLegacyFiles,
-    saveLegacyServerFile,
     TlvFabricMetadata,
 } from "../../src/converter/index.js";
 
@@ -340,100 +332,6 @@ describe("LegacyDataLoader", () => {
         }
     });
 
-    describe("saveLegacyServerFile", () => {
-        it("should save server file with correct name", async () => {
-            const legacyDir = join(testDir, "save-test");
-            await mkdir(legacyDir, { recursive: true });
-            await copyFile(FIXTURE_CHIP_JSON, join(legacyDir, "chip.json"));
-
-            // Load chip.json to get fabric config
-            const chipConfig = new ChipConfigData();
-            await chipConfig.load(join(legacyDir, "chip.json"));
-            const fabricConfig = chipConfig.getFabricConfig(1);
-            expect(fabricConfig).to.exist;
-
-            // Create a server file to save
-            const serverFile: LegacyServerFile = {
-                vendor_info: {
-                    "1234": {
-                        vendor_id: 1234,
-                        vendor_name: "Saved Vendor",
-                        company_legal_name: "Saved Company",
-                        company_preferred_name: "SavedCo",
-                        vendor_landing_page_url: "https://saved.example.com",
-                        creator: "test",
-                    },
-                },
-                last_node_id: 10,
-                nodes: {
-                    "8": {
-                        node_id: 8,
-                        date_commissioned: "2024-05-01T00:00:00.000000",
-                        last_interview: "2024-06-01T00:00:00.000000",
-                        interview_version: 6,
-                        available: true,
-                        is_bridge: false,
-                        attributes: { "0/40/1": "Saved Device" },
-                        attribute_subscriptions: [],
-                    },
-                },
-            };
-
-            await saveLegacyServerFile(env, legacyDir, fabricConfig!, serverFile);
-
-            // Compute expected filename and verify
-            const crypto = env.get(Crypto);
-            const compressedFabricId = await computeCompressedNodeId(
-                crypto,
-                fabricConfig!.fabricId,
-                fabricConfig!.rootPublicKey,
-            );
-            const serverFileName = `${compressedFabricId}.json`;
-
-            const savedContent = JSON.parse(await readFile(join(legacyDir, serverFileName), "utf-8"));
-            expect(savedContent.last_node_id).to.equal(10);
-            expect(savedContent.nodes["8"].node_id).to.equal(8);
-            expect(savedContent.nodes["8"].attributes["0/40/1"]).to.equal("Saved Device");
-            expect(savedContent.vendor_info["1234"].vendor_name).to.equal("Saved Vendor");
-        });
-
-        it("should round-trip server file data", async () => {
-            const legacyDir = join(testDir, "roundtrip-test");
-            await mkdir(legacyDir, { recursive: true });
-            await copyFile(FIXTURE_CHIP_JSON, join(legacyDir, "chip.json"));
-
-            // Load chip.json
-            const chipConfig = new ChipConfigData();
-            await chipConfig.load(join(legacyDir, "chip.json"));
-            const fabricConfig = chipConfig.getFabricConfig(1);
-            expect(fabricConfig).to.exist;
-
-            // Load server fixture
-            const originalServerFile = JSON.parse(await readFile(FIXTURE_SERVER_JSON, "utf-8")) as LegacyServerFile;
-
-            // Save it
-            await saveLegacyServerFile(env, legacyDir, fabricConfig!, originalServerFile);
-
-            // Load it back
-            const result = await loadLegacyData(env, legacyDir, {
-                vendorId: FIXTURE_VENDOR_ID,
-                fabricId: FIXTURE_FABRIC_ID,
-            });
-
-            expect(result.serverFile).to.exist;
-            expect(result.serverFile!.last_node_id).to.equal(originalServerFile.last_node_id);
-            expect(Object.keys(result.serverFile!.nodes)).to.deep.equal(Object.keys(originalServerFile.nodes));
-
-            for (const [nodeId, originalNode] of Object.entries(originalServerFile.nodes)) {
-                const loadedNode = result.serverFile!.nodes[nodeId];
-                expect(loadedNode).to.exist;
-                expect(loadedNode.node_id).to.equal(originalNode.node_id);
-                expect(loadedNode.is_bridge).to.equal(originalNode.is_bridge);
-                expect(loadedNode.available).to.equal(originalNode.available);
-            }
-        });
-    });
-
     describe("vendor_info handling", () => {
         it("should load vendor info from server file", async () => {
             const legacyDir = join(testDir, "vendor-info-test");
@@ -513,7 +411,6 @@ describe("LegacyDataLoader", () => {
             }
         });
 
-        // Renaming is what makes the import one-shot, so the loader must no longer see anything.
         it("leaves nothing for a subsequent load to import", async () => {
             const { legacyDir, fabricConfig } = await seedLegacyDir("retire-then-load", false);
 
@@ -540,7 +437,7 @@ describe("LegacyDataLoader", () => {
             const chipConfig = {
                 getFabricIndices: () => [1, 2],
                 getFabricConfig: (index: number) => (index === 1 ? fabricConfig : other),
-            } as unknown as ChipConfigData;
+            };
             const serverFileName = `${await computeCompressedNodeId(env.get(Crypto), other.fabricId, other.rootPublicKey)}.json`;
             return { chipConfig, serverFileName };
         }
@@ -556,20 +453,15 @@ describe("LegacyDataLoader", () => {
             expect(await exists(join(legacyDir, "chip.json"))).to.be.true;
         });
 
-        // The credentials of a fabric are in chip.json alone, so a fabric can be listed there with no
-        // server file of its own and still have everything to lose.
-        it("keeps chip.json for another fabric that has no server file at all", async () => {
+        it("retires chip.json when another fabric has no server file", async () => {
             const { legacyDir, fabricConfig } = await seedLegacyDir("retire-fabric-no-file", false);
             const { chipConfig } = await secondFabric(fabricConfig);
 
             const retired = await retireLegacyFiles(env, legacyDir, fabricConfig, chipConfig);
 
-            expect(retired).to.not.include("chip.json");
-            expect(await exists(join(legacyDir, "chip.json"))).to.be.true;
+            expect(retired).to.include("chip.json");
         });
 
-        // chip.json lists every fabric it ever held, retired ones included, so presence there cannot decide
-        // this: the last fabric to migrate would keep the file forever.
         it("retires chip.json once every other fabric has been retired", async () => {
             const { legacyDir, fabricConfig } = await seedLegacyDir("retire-last-fabric", false);
             const { chipConfig, serverFileName: otherFileName } = await secondFabric(fabricConfig);
@@ -580,18 +472,19 @@ describe("LegacyDataLoader", () => {
             expect(retired).to.include("chip.json");
         });
 
-        // A backup alone is enough for the loader to import a fabric from, so it counts as retired too.
-        it("retires chip.json when another fabric only retired a backup", async () => {
-            const { legacyDir, fabricConfig } = await seedLegacyDir("retire-last-fabric-backup", false);
+        // The loader imports a fabric from its backup when the server file itself is gone.
+        it("keeps chip.json while another fabric still has a backup server file", async () => {
+            const { legacyDir, fabricConfig } = await seedLegacyDir("retire-other-backup", false);
             const { chipConfig, serverFileName: otherFileName } = await secondFabric(fabricConfig);
-            await copyFile(FIXTURE_SERVER_JSON, join(legacyDir, `${otherFileName}.backup.migrated`));
+            await copyFile(FIXTURE_SERVER_JSON, join(legacyDir, `${otherFileName}.backup`));
 
             const retired = await retireLegacyFiles(env, legacyDir, fabricConfig, chipConfig);
 
-            expect(retired).to.include("chip.json");
+            expect(retired).to.not.include("chip.json");
+            expect(await exists(join(legacyDir, "chip.json"))).to.be.true;
         });
 
-        it("reports a file it could not rename, so the caller keeps the imported storage", async () => {
+        it("throws when a file cannot be renamed", async () => {
             const { legacyDir, fabricConfig, serverFileName } = await seedLegacyDir("retire-blocked", false);
             // A directory under the target name makes rename fail the way a read-only mount would.
             await mkdir(join(legacyDir, `${serverFileName}.migrated`), { recursive: true });
@@ -638,32 +531,5 @@ describe("LegacyDataLoader", () => {
                 await chmod(legacyDir, 0o755);
             }
         });
-    });
-});
-
-describe("missingLegacyNodes", () => {
-    function serverFile(...nodeIds: string[]): LegacyServerFile {
-        return { nodes: Object.fromEntries(nodeIds.map(nodeId => [nodeId, {}])) } as unknown as LegacyServerFile;
-    }
-
-    it("reports nothing when every legacy node is known", () => {
-        expect(missingLegacyNodes(serverFile("1", "2"), [1n, 2n])).to.deep.equal([]);
-    });
-
-    it("reports a legacy node the controller does not know", () => {
-        expect(missingLegacyNodes(serverFile("1", "2", "3"), [1n, 2n])).to.deep.equal(["3"]);
-    });
-
-    it("does not let an unrelated node stand in for a missing one", () => {
-        // Same count, different devices: node 3 never migrated and node 9 was commissioned since.
-        expect(missingLegacyNodes(serverFile("1", "2", "3"), [1n, 2n, 9n])).to.deep.equal(["3"]);
-    });
-
-    it("accepts more known nodes than the file lists", () => {
-        expect(missingLegacyNodes(serverFile("1"), [1n, 2n, 3n])).to.deep.equal([]);
-    });
-
-    it("reports nothing when there is no legacy file", () => {
-        expect(missingLegacyNodes(undefined, [])).to.deep.equal([]);
     });
 });

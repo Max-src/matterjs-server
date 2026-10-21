@@ -7,6 +7,13 @@ This page shows a detailed overview of the changes between versions without the 
 	## **WORK IN PROGRESS**
 -->
 
+## **WORK IN PROGRESS**
+
+- Breaking: The server no longer writes changes back into the Python Matter Server data files. To go back to the Python Matter Server, restore the backup from before the migration
+- Enhancement: Once all Python Matter Server data is migrated, the server renames the Python Matter Server data files to `*.migrated`, so later starts no longer read them
+- Fix: Nodes from the Python Matter Server data that were not migrated on the first start are migrated on a later start
+- Fix: Controller storage written by matter.js before 0.16 is migrated again
+
 ## 1.5.2 (2026-10-21)
 
 - Fix: Events with a delta timestamp are processed with the calculated device time again instead of the time the server received them
@@ -32,8 +39,6 @@ This page shows a detailed overview of the changes between versions without the 
     - Adds support for Matter 1.6.1 (including Python client)
 - Enhancement: Finishes the migration to the new matter.js controller API
 - Enhancement: `send_webrtc_provider_command` also relays `ProvideAnswer` and `ProvideIceCandidates`
-- Enhancement: The python-matter-server data is imported once and then retired, so later starts no longer re-read it
-- Breaking: The server no longer writes changes back into the python-matter-server files, so going back to python-matter-server after a successful start is not possible
 - Enhancement: (@RaHehl) `open_commissioning_window` also returns `discriminator`, `vendor_id`, `product_id` and `commissioning_timeout` (seconds) as reported by matter.js, so clients can hand the data to another ecosystem without decoding the QR code.
 - Enhancement: Adds CLI flag `--revocation-sets-dir` (env `REVOCATION_SETS_DIR`): the server installs the device attestation revocation sets from that directory at every start, and refuses devices whose certificates they list. See [README](README.md#installing-device-attestation-revocation-sets)
 - Enhancement: Adds CLI flag `--certificates-dir` (env `CERTIFICATES_DIR`): the server imports PAA certificates from `*.paa.der` and `*.paa.pem` files in that directory at start, so devices with a vendor's own PAA can be commissioned. See [README](README.md#importing-custom-paa-certificates)

@@ -14,12 +14,14 @@ import {
     NetworkSimulator,
     StorageService,
     SupportedStorageTypes,
+    Timestamp,
 } from "@matter/general";
+import { CommissioningClient } from "@matter/main";
 import { FabricId, NodeId, VendorId } from "@matter/main/types";
 import { ServerNode, ServerNodeStore } from "@matter/node";
-import { PeerAddress } from "@matter/protocol";
+import { CertificateAuthority, PeerAddress } from "@matter/protocol";
 import { createControllerNode } from "../src/controller/ControllerNode.js";
-import { LegacyNodeImportMarker, migrateLegacyCommissionedNodes } from "../src/controller/legacyStorageMigration.js";
+import { cleanupLegacyStorage, migrateLegacyCommissionedNodes } from "../src/controller/legacyStorageMigration.js";
 
 const SERVER_ID = "server";
 
@@ -36,7 +38,7 @@ function testEnvironment() {
     return env;
 }
 
-async function createNode(env: Environment, legacyNodeImport?: LegacyNodeImportMarker) {
+async function createNode(env: Environment, migrateLegacyStorage = true) {
     return createControllerNode({
         environment: env,
         id: SERVER_ID,
@@ -45,21 +47,8 @@ async function createNode(env: Environment, legacyNodeImport?: LegacyNodeImportM
         adminFabricLabel: "test-fabric",
         serverVersion: "1.0.0",
         enableOtaProvider: false,
-        legacyNodeImport,
+        migrateLegacyStorage,
     });
-}
-
-/** Records the scopes it was told about, the way ConfigStorage persists them. */
-function importMarker() {
-    return {
-        scopes: new Array<string>(),
-        hasImportedLegacyNodes(scope: string) {
-            return this.scopes.includes(scope);
-        },
-        async markLegacyNodesImported(scope: string) {
-            this.scopes.push(scope);
-        },
-    };
 }
 
 /**
@@ -102,6 +91,34 @@ async function restoreFabricsOnly(env: Environment) {
     }
 }
 
+/** The authority a failed python-matter-server migration left under `credentials` next to the one in use. */
+async function storeCredentialsAuthority(env: Environment, config: CertificateAuthority.Configuration) {
+    const mgr = await env.get(StorageService).open(SERVER_ID);
+    try {
+        await mgr.createContext("credentials").set(config);
+    } finally {
+        await mgr.close();
+    }
+}
+
+async function storedCertificateKeys(env: Environment) {
+    const mgr = await env.get(StorageService).open(SERVER_ID);
+    try {
+        return await mgr.createContext("certificates").keys();
+    } finally {
+        await mgr.close();
+    }
+}
+
+async function legacyNodeListLength(env: Environment) {
+    const mgr = await env.get(StorageService).open(SERVER_ID);
+    try {
+        return (await mgr.createContext("nodes").get<SupportedStorageTypes[]>("commissionedNodes", [])).length;
+    } finally {
+        await mgr.close();
+    }
+}
+
 async function legacyKeysPresent(env: Environment) {
     const mgr = await env.get(StorageService).open(SERVER_ID);
     try {
@@ -124,16 +141,6 @@ async function storedFabricCount(env: Environment) {
 const LEGACY_ENDPOINT = "0";
 const LEGACY_CLUSTER = "29";
 const LEGACY_ATTRIBUTE = "1";
-
-/** The list a fresh install is initialised with. */
-async function seedEmptyLegacyList(env: Environment) {
-    const mgr = await env.get(StorageService).open(SERVER_ID);
-    try {
-        await mgr.createContext("nodes").set("commissionedNodes", []);
-    } finally {
-        await mgr.close();
-    }
-}
 
 /** Write a commissioned node the way python-matter-server's import left it. */
 async function seedLegacyPeer(env: Environment, nodeId: number, attributeValue: SupportedStorageTypes) {
@@ -189,8 +196,6 @@ describe("legacy storage migration on controller construction", () => {
     });
 
     it("adopts a fabric left in the pre-0.16 layout instead of creating a new one", async () => {
-        // Without the migration the controller silently starts a brand new fabric and every device
-        // commissioned by the old install becomes unreachable.
         const first = await createNode(env);
         const originalRootCert = first.fabric.rootCert;
         const originalFabricIndex = first.fabric.fabricIndex;
@@ -207,10 +212,8 @@ describe("legacy storage migration on controller construction", () => {
         }
     });
 
-    // LegacyDataInjector (the python-matter-server import path) writes the certificate authority under
-    // `credentials` but the fabric straight into `fabrics`. Gating the authority's relocation on the
-    // fabric still needing to move would skip it, and matter.js would then mint a root that does not
-    // control the imported fabric.
+    // Older LegacyDataInjector versions wrote the certificate authority under `credentials` but the fabric
+    // straight into `fabrics`.
     it("relocates certificate authority material even when the fabric is already in the current layout", async () => {
         const first = await createNode(env);
         const originalRootCert = first.fabric.rootCert;
@@ -223,6 +226,22 @@ describe("legacy storage migration on controller construction", () => {
         try {
             expect(second.fabric.rootCert).deep.equals(originalRootCert);
             expect(await storedFabricCount(env)).equals(1);
+        } finally {
+            await second.node.close();
+        }
+    });
+
+    it("keeps a certificate authority already in place when another one is left under credentials", async () => {
+        const first = await createNode(env);
+        const originalRootCert = first.fabric.rootCert;
+        await first.node.close();
+        await storeCredentialsAuthority(env, (await CertificateAuthority.create(env.get(Crypto), true)).config);
+
+        const second = await createNode(env);
+        try {
+            expect(second.fabric.rootCert).deep.equals(originalRootCert);
+            expect(await storedCertificateKeys(env)).not.include("icacCertBytes");
+            expect(await legacyKeysPresent(env)).greaterThan(0);
         } finally {
             await second.node.close();
         }
@@ -242,17 +261,16 @@ describe("legacy storage migration on controller construction", () => {
         }
     });
 
-    it("tolerates a repeated start after migrating, so an interrupted run resumes", async () => {
+    it("removes the legacy data once it is migrated", async () => {
         const first = await createNode(env);
         const originalRootCert = first.fabric.rootCert;
         await first.node.close();
-
         await demoteStoreToLegacyLayout(env);
+        expect(await legacyKeysPresent(env)).greaterThan(0);
 
-        // Legacy data is left in place deliberately, so the next start sees it again and must not
-        // duplicate or re-migrate it into a second fabric.
         const second = await createNode(env);
         await second.node.close();
+        expect(await legacyKeysPresent(env)).equals(0);
 
         const third = await createNode(env);
         try {
@@ -263,29 +281,18 @@ describe("legacy storage migration on controller construction", () => {
         }
     });
 
-    // The source is kept: the python-matter-server importer recognises an already-imported node by
-    // markers stored alongside it, and re-reads its files on every start.
-    it("keeps the legacy source after migrating", async () => {
+    it("leaves the store alone when the migration is off", async () => {
         const first = await createNode(env);
         const originalRootCert = first.fabric.rootCert;
         await first.node.close();
-
         await demoteStoreToLegacyLayout(env);
-        expect(await legacyKeysPresent(env)).greaterThan(0);
 
-        const second = await createNode(env);
+        const second = await createNode(env, false);
         try {
+            expect(second.fabric.rootCert).not.deep.equals(originalRootCert);
             expect(await legacyKeysPresent(env)).greaterThan(0);
-            expect(second.fabric.rootCert).deep.equals(originalRootCert);
         } finally {
             await second.node.close();
-        }
-
-        const third = await createNode(env);
-        try {
-            expect(third.fabric.rootCert).deep.equals(originalRootCert);
-        } finally {
-            await third.node.close();
         }
     });
 });
@@ -298,6 +305,12 @@ describe("migrateLegacyCommissionedNodes", () => {
         env = testEnvironment();
     });
 
+    function peerOf(controller: Awaited<ReturnType<typeof createNode>>, nodeId: bigint) {
+        return controller.node.peers.get(
+            PeerAddress({ fabricIndex: controller.fabric.fabricIndex, nodeId: NodeId(nodeId) }),
+        );
+    }
+
     it("brings a commissioned node and its attributes across", async () => {
         const first = await createNode(env);
         await first.node.close();
@@ -305,26 +318,25 @@ describe("migrateLegacyCommissionedNodes", () => {
 
         const controller = await createNode(env);
         try {
-            const peer = controller.node.peers.get(
-                PeerAddress({ fabricIndex: controller.fabric.fabricIndex, nodeId: NodeId(5n) }),
-            );
-            expect(peer).not.undefined;
-            expect(await migratedAttribute(controller.node, peer!.id)).equals(42);
+            const peer = peerOf(controller, 5n);
+            if (peer === undefined) {
+                expect.fail("node 5 was not migrated");
+                return;
+            }
+            expect(await migratedAttribute(controller.node, peer.id)).equals(42);
         } finally {
             await controller.node.close();
         }
     });
 
-    it("migrates a node once, however often it runs", async () => {
+    it("migrates nothing once the store holds peers", async () => {
         const first = await createNode(env);
         await first.node.close();
         await seedLegacyPeer(env, 5, 42);
 
         const controller = await createNode(env);
         try {
-            // The controller already migrated it during construction, so a second pass has nothing to do.
             expect(await migrateLegacyCommissionedNodes(controller.node)).deep.equals({
-                found: 1,
                 nodes: 0,
                 endpoints: 0,
                 failed: 0,
@@ -335,60 +347,68 @@ describe("migrateLegacyCommissionedNodes", () => {
         }
     });
 
-    it("imports a node list once and leaves a decommissioned peer gone", async () => {
-        const marker = importMarker();
-        const first = await createNode(env, marker);
+    it("does not bring back a removed peer from a legacy list next to existing peers", async () => {
+        const first = await createNode(env);
         await first.node.close();
         await seedLegacyPeer(env, 5, 42);
+        await seedLegacyPeer(env, 6, 43);
 
-        const second = await createNode(env, marker);
-        const peerAddress = PeerAddress({ fabricIndex: second.fabric.fabricIndex, nodeId: NodeId(5n) });
-        const peer = second.node.peers.get(peerAddress);
-        expect(peer).not.undefined;
-        expect(marker.scopes).deep.equals([SERVER_ID]);
-        await peer!.delete();
+        const second = await createNode(env);
+        await peerOf(second, 5n)?.delete();
         await second.node.close();
+        await seedLegacyPeer(env, 5, 42);
 
-        // The legacy source still lists the peer: it is only retired once the import is behind us, and
-        // the removal must not be undone by a start that happens before that.
-        const third = await createNode(env, marker);
+        const third = await createNode(env);
         try {
-            expect(third.node.peers.get(peerAddress)).undefined;
+            expect(peerOf(third, 5n)).undefined;
+            expect(peerOf(third, 6n)).not.undefined;
         } finally {
             await third.node.close();
         }
     });
 
-    // The injector writes an empty list on a fresh install, so the key alone does not mean there is
-    // anything to import.
-    it("stays open to an import when the legacy list is empty", async () => {
-        const marker = importMarker();
-        const first = await createNode(env, marker);
+    it("does not migrate legacy nodes that belong to another controller CA", async () => {
+        const first = await createNode(env);
         await first.node.close();
-        await seedEmptyLegacyList(env);
+        await seedLegacyPeer(env, 5, 42);
+        await storeCredentialsAuthority(env, (await CertificateAuthority.create(env.get(Crypto), true)).config);
 
-        const second = await createNode(env, marker);
-        await second.node.close();
-
-        expect(marker.scopes).deep.equals([]);
+        const controller = await createNode(env);
+        try {
+            expect(peerOf(controller, 5n)).undefined;
+            expect(await legacyNodeListLength(env)).equals(1);
+        } finally {
+            await controller.node.close();
+        }
     });
 
-    it("stays open to an import when the store never had legacy data", async () => {
-        const marker = importMarker();
-        const first = await createNode(env, marker);
+    it("keeps legacy node data of another controller CA even when a peer has the same node ID", async () => {
+        const first = await createNode(env, false);
+        const peer = await first.node.peers.forAddress(first.fabric.addressOf(NodeId(5n)));
+        await peer.setStateOf(CommissioningClient, { commissionedAt: Timestamp(1) });
         await first.node.close();
-
-        expect(marker.scopes).deep.equals([]);
-
-        // The server is started on a fresh storage path before the legacy data is injected into it.
         await seedLegacyPeer(env, 5, 42);
-        const second = await createNode(env, marker);
+        await storeCredentialsAuthority(env, (await CertificateAuthority.create(env.get(Crypto), true)).config);
+
+        const controller = await createNode(env);
         try {
-            expect(second.node.peers.get(PeerAddress({ fabricIndex: second.fabric.fabricIndex, nodeId: NodeId(5n) })))
-                .not.undefined;
-            expect(marker.scopes).deep.equals([SERVER_ID]);
+            expect(await legacyNodeListLength(env)).equals(1);
         } finally {
-            await second.node.close();
+            await controller.node.close();
+        }
+    });
+
+    it("keeps the legacy data of nodes that have no peer", async () => {
+        const first = await createNode(env);
+        await first.node.close();
+        await seedLegacyPeer(env, 5, 42);
+
+        const controller = await createNode(env, false);
+        try {
+            await cleanupLegacyStorage(controller.node);
+            expect(await legacyNodeListLength(env)).equals(1);
+        } finally {
+            await controller.node.close();
         }
     });
 
@@ -398,14 +418,11 @@ describe("migrateLegacyCommissionedNodes", () => {
         await seedLegacyPeer(env, 5, 42);
         await seedLegacyPeer(env, 6, 43);
 
-        const controller = await createNode(env);
+        const controller = await createNode(env, false);
         try {
             await dropStoredFabrics(controller.node);
 
-            // Reported as failed rather than skipped silently: the caller keeps the legacy source when
-            // anything failed, and these peers still have to come across on a later start.
             expect(await migrateLegacyCommissionedNodes(controller.node)).deep.equals({
-                found: 2,
                 nodes: 0,
                 endpoints: 0,
                 failed: 2,
