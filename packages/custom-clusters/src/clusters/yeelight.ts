@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Bytes } from "@matter/main";
+import { Bytes, Decorator } from "@matter/main";
 import {
     attribute,
     bool,
@@ -12,6 +12,7 @@ import {
     command,
     enum8,
     field,
+    FieldSemantics,
     listOf,
     mandatory,
     nullable,
@@ -22,6 +23,7 @@ import {
     uint16,
     uint32,
     uint64,
+    ValueModel,
     writable,
 } from "@matter/main/model";
 
@@ -31,12 +33,22 @@ import {
 // id 0xfff1 and 0x134b (the device does not restrict these clusters by fabric).
 //
 // The firmware reads integer fields with unsigned getters, so they are declared unsigned. It copies colour lists into
-// fixed buffers without a length check: never send more than 4 colours in an effect, nor more than 16 in a music
-// palette. Effect ids 41 and 43 hang the lamp.
+// fixed buffers without a length check, so the requests below take exactly 4 colours in an effect and at most 16 in a
+// music palette (checked when a request is encoded; replies are not limited). Effect ids 41 and 43 hang the lamp.
 //
 // Left out on purpose: setIntensity (0x13120001), setColor (0x13120003) and getPersistEffect (0x1312000c) are listed by
 // the device but never answer; CubeControl's effectModeNext (0x13120000) always fails; YeelightOverTheAir's
 // yeeStartUpdate starts a firmware update.
+
+/**
+ * A field's Matter constraint (for a list: its length). matter.js checks it when it encodes a request, so a request
+ * the device cannot take safely is refused before it is sent.
+ */
+function constraint(definition: string): Decorator.PropertyCollector {
+    return Decorator<Decorator.PropertyCollector>((_target, context) => {
+        (FieldSemantics.of(context).mutableModel as ValueModel).constraint = definition;
+    });
+}
 
 /** {@link YeelightCubeControlCluster.rotationAngle} values: the Yeelight app's direction arrows. */
 const enum YeelightRotationAngle {
@@ -105,7 +117,7 @@ class YeelightSetMicMusicModeRequest {
      * ARGB colours, at most 16. Required to turn a mode on: without it the device accepts the command and nothing
      * happens (the Yeelight app always sends 16).
      */
-    @field(0x2, listOf(uint32))
+    @field(0x2, listOf(uint32), constraint("max 16"))
     palette?: number[];
 }
 
@@ -172,8 +184,11 @@ class YeelightEffectConfig {
     @field(0x5, uint8)
     speed?: number;
 
-    /** ARGB colours: send exactly 4 (more overflow the device's buffer, missing ones are read from stale memory). */
-    @field(0x6, listOf(uint32))
+    /**
+     * ARGB colours, exactly 4: more overflow the device's buffer, missing ones are read from stale memory (enforced
+     * when the request is encoded).
+     */
+    @field(0x6, listOf(uint32), constraint("4"))
     color?: number[];
 
     /**
@@ -203,6 +218,53 @@ class YeelightEffectStruct {
 
     @field(0x2, listOf(YeelightEffectConfig))
     effectParams?: YeelightEffectConfig[];
+}
+
+/**
+ * The running effect as the device reports it ({@link YeelightEnhancedColorEffectConfigV2Cluster.getCurrentEffect}): the
+ * fields of {@link YeelightEffectConfig} without its request limits, so any reply is accepted.
+ */
+class YeelightCurrentEffectConfig {
+    @field(0x0, uint16)
+    start?: number;
+
+    @field(0x1, uint16)
+    end?: number;
+
+    @field(0x2, uint8)
+    onoff?: number;
+
+    @field(0x3, uint16, mandatory)
+    mode!: number;
+
+    @field(0x4, uint8)
+    intensity?: number;
+
+    @field(0x5, uint8)
+    speed?: number;
+
+    @field(0x6, listOf(uint32))
+    color?: number[];
+
+    @field(0x7, octstr)
+    data?: Bytes;
+
+    @field(0x8, uint8)
+    mixer?: number;
+
+    @field(0x9, uint8)
+    direction?: number;
+}
+
+class YeelightCurrentEffectStruct {
+    @field(0x0, uint64, mandatory)
+    effectId!: number | bigint;
+
+    @field(0x1, uint64)
+    customId?: number | bigint;
+
+    @field(0x2, listOf(YeelightCurrentEffectConfig))
+    effectParams?: YeelightCurrentEffectConfig[];
 }
 
 class YeelightEffectSnapshot {
@@ -259,8 +321,8 @@ class YeelightGetPersistEffectListResponse {
 }
 
 class YeelightGetCurrentEffectResponse {
-    @field(0x0, YeelightEffectStruct, mandatory)
-    effect!: YeelightEffectStruct;
+    @field(0x0, YeelightCurrentEffectStruct, mandatory)
+    effect!: YeelightCurrentEffectStruct;
 }
 
 class YeelightSetPresetsEffectRequest {
@@ -282,7 +344,7 @@ class YeelightSetPresetsEffectRequest {
     rate?: number;
 
     /** ARGB colours: send exactly 4. */
-    @field(0x5, listOf(uint32))
+    @field(0x5, listOf(uint32), constraint("4"))
     color?: number[];
 
     /** See {@link YeelightEffectDirection}. */

@@ -97,6 +97,50 @@ class YeelightEnhancedColorEffectConfigV2Cluster(Cluster):
             effectID: uint = 0
             customID: uint = 0
 
+        @dataclass
+        class YeelightCurrentEffectStruct(ClusterObject):
+            @ChipUtility.classproperty
+            def descriptor(cls) -> ClusterObjectDescriptor:
+                return ClusterObjectDescriptor(
+                    Fields=[
+                        ClusterObjectFieldDescriptor(Label="effectID", Tag=0, Type=uint),
+                        ClusterObjectFieldDescriptor(Label="customID", Tag=1, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="effectParams", Tag=2, Type=typing.Optional[typing.List[YeelightEnhancedColorEffectConfigV2Cluster.Structs.YeelightCurrentEffectConfig]]),
+                    ])
+
+            effectID: uint = 0
+            customID: typing.Optional[uint] = None
+            effectParams: typing.Optional[typing.List[YeelightEnhancedColorEffectConfigV2Cluster.Structs.YeelightCurrentEffectConfig]] = None
+
+        @dataclass
+        class YeelightCurrentEffectConfig(ClusterObject):
+            @ChipUtility.classproperty
+            def descriptor(cls) -> ClusterObjectDescriptor:
+                return ClusterObjectDescriptor(
+                    Fields=[
+                        ClusterObjectFieldDescriptor(Label="start", Tag=0, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="end", Tag=1, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="onoff", Tag=2, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="mode", Tag=3, Type=uint),
+                        ClusterObjectFieldDescriptor(Label="intensity", Tag=4, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="speed", Tag=5, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="color", Tag=6, Type=typing.Optional[typing.List[uint]]),
+                        ClusterObjectFieldDescriptor(Label="data", Tag=7, Type=typing.Optional[bytes]),
+                        ClusterObjectFieldDescriptor(Label="mixer", Tag=8, Type=typing.Optional[uint]),
+                        ClusterObjectFieldDescriptor(Label="direction", Tag=9, Type=typing.Optional[uint]),
+                    ])
+
+            start: typing.Optional[uint] = None
+            end: typing.Optional[uint] = None
+            onoff: typing.Optional[uint] = None
+            mode: uint = 0
+            intensity: typing.Optional[uint] = None
+            speed: typing.Optional[uint] = None
+            color: typing.Optional[typing.List[uint]] = None
+            data: typing.Optional[bytes] = None
+            mixer: typing.Optional[uint] = None
+            direction: typing.Optional[uint] = None
+
     class Commands:
         @dataclass
         class SetEffect(ClusterCommand):
@@ -311,10 +355,10 @@ class YeelightEnhancedColorEffectConfigV2Cluster(Cluster):
             def descriptor(cls) -> ClusterObjectDescriptor:
                 return ClusterObjectDescriptor(
                     Fields=[
-                        ClusterObjectFieldDescriptor(Label="effect", Tag=0, Type=YeelightEnhancedColorEffectConfigV2Cluster.Structs.YeelightEffectStruct),
+                        ClusterObjectFieldDescriptor(Label="effect", Tag=0, Type=YeelightEnhancedColorEffectConfigV2Cluster.Structs.YeelightCurrentEffectStruct),
                     ])
 
-            effect: YeelightEnhancedColorEffectConfigV2Cluster.Structs.YeelightEffectStruct = field(default_factory=lambda: YeelightEnhancedColorEffectConfigV2Cluster.Structs.YeelightEffectStruct())
+            effect: YeelightEnhancedColorEffectConfigV2Cluster.Structs.YeelightCurrentEffectStruct = field(default_factory=lambda: YeelightEnhancedColorEffectConfigV2Cluster.Structs.YeelightCurrentEffectStruct())
 
         @dataclass
         class SendGifDataFragmentResponse(ClusterCommand):

@@ -110,6 +110,43 @@ describe("Yeelight Cube Lite clusters", () => {
         ]);
     });
 
+    it("refuses colour lists the device's buffers cannot take, before sending them", () => {
+        const colours = (count: number) => Array<number>(count).fill(0xffff0000);
+        const requests: [number, string, (count: number) => unknown][] = [
+            [0x1312fc05, "setPresetsEffect", count => ({ apply: 1, effectId: 42, color: colours(count) })],
+            [
+                0x1312fc05,
+                "setEffect",
+                count => ({ apply: 1, effect: { effectId: 42, effectParams: [{ mode: 42, color: colours(count) }] } }),
+            ],
+            [
+                0x1312fc05,
+                "updatePersistEffectList",
+                count => ({ index: 0, effect: { effectId: 42, effectParams: [{ mode: 42, color: colours(count) }] } }),
+            ],
+        ];
+        for (const [clusterId, name, request] of requests) {
+            expect(() => encoded(clusterId, name, request(4)), `${name} with 4 colours`).not.to.throw();
+            expect(() => encoded(clusterId, name, request(3)), `${name} with 3 colours`).to.throw(/too short/);
+            expect(() => encoded(clusterId, name, request(5)), `${name} with 5 colours`).to.throw(/too long/);
+        }
+        // Colours stay optional.
+        expect(() => encoded(0x1312fc05, "setPresetsEffect", { apply: 1, effectId: 42 })).not.to.throw();
+
+        const music = (count: number) => ({ on: true, effectId: 85, palette: colours(count) });
+        expect(() => encoded(0x1312fc01, "setMicMusicMode", music(16))).not.to.throw();
+        expect(() => encoded(0x1312fc01, "setMicMusicMode", music(17))).to.throw(/too long/);
+    });
+
+    it("accepts any colour list in a reply", () => {
+        const reply = cluster(0x1312fc05).commands.find(model => model.name === "getCurrentEffectResponse");
+        // {0: {0: 42, 2: [{3: 42, 6: [1, 2]}]}}: a reply with 2 colours
+        const tlv = Bytes.fromHex("153500" + "24002a" + "360215" + "24032a" + "3606" + "04010402" + "1818181818");
+        expect(TlvOfModel(reply!).decode(tlv)).to.deep.equal({
+            effect: { effectId: 42, effectParams: [{ mode: 42, color: [1, 2] }] },
+        });
+    });
+
     it("encodes requests as the device decodes them", () => {
         expect(encoded(0x1312fc05, "setPresetsEffect", { apply: 1, effectId: 39, rate: 200, direction: 2 })).to.equal(
             "152400012401272404c824060218",
