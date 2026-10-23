@@ -17,7 +17,9 @@ from chip.clusters.cluster_defs.WagoCluster import WagoCluster
 from chip.clusters.cluster_defs.YeelightBasicCluster import YeelightBasicCluster
 from chip.clusters.cluster_defs.YeelightBasicConfigCluster import YeelightBasicConfigCluster
 from chip.clusters.cluster_defs.YeelightCubeControlCluster import YeelightCubeControlCluster
-from chip.clusters.cluster_defs.YeelightEnhancedColorEffectConfigV2Cluster import YeelightEnhancedColorEffectConfigV2Cluster
+from chip.clusters.cluster_defs.YeelightEnhancedColorEffectConfigV2Cluster import (
+    YeelightEnhancedColorEffectConfigV2Cluster,
+)
 from chip.clusters.cluster_defs.YeelightOverTheAirCluster import YeelightOverTheAirCluster
 
 ALL_CUSTOM_CLUSTERS: dict = {

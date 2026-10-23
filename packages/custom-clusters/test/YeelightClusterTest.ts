@@ -5,14 +5,14 @@
  */
 
 import { Bytes } from "@matter/main";
-import { ClusterModel, Matter } from "@matter/main/model";
-import { TlvOfModel } from "@matter/main/types";
+import { Matter } from "@matter/main/model";
+import { TlvAny, TlvOfModel } from "@matter/main/types";
 import "../src/register.js";
 
 function cluster(id: number) {
-    const model = Matter.children.find(child => child.tag === "cluster" && child.id === id);
+    const model = Matter.clusters.find(cluster => cluster.id === id);
     expect(model, `cluster 0x${id.toString(16)} is registered`).to.exist;
-    return model as ClusterModel;
+    return model!;
 }
 
 function attributes(id: number) {
@@ -110,39 +110,39 @@ describe("Yeelight Cube Lite clusters", () => {
         ]);
     });
 
-    it("refuses colour lists the device's buffers cannot take, before sending them", () => {
-        const colours = (count: number) => Array<number>(count).fill(0xffff0000);
+    it("refuses color lists the device's buffers cannot take, before sending them", () => {
+        const colors = (count: number) => Array<number>(count).fill(0xffff0000);
         const requests: [number, string, (count: number) => unknown][] = [
-            [0x1312fc05, "setPresetsEffect", count => ({ apply: 1, effectId: 42, color: colours(count) })],
+            [0x1312fc05, "setPresetsEffect", count => ({ apply: 1, effectId: 42, color: colors(count) })],
             [
                 0x1312fc05,
                 "setEffect",
-                count => ({ apply: 1, effect: { effectId: 42, effectParams: [{ mode: 42, color: colours(count) }] } }),
+                count => ({ apply: 1, effect: { effectId: 42, effectParams: [{ mode: 42, color: colors(count) }] } }),
             ],
             [
                 0x1312fc05,
                 "updatePersistEffectList",
-                count => ({ index: 0, effect: { effectId: 42, effectParams: [{ mode: 42, color: colours(count) }] } }),
+                count => ({ index: 0, effect: { effectId: 42, effectParams: [{ mode: 42, color: colors(count) }] } }),
             ],
         ];
         for (const [clusterId, name, request] of requests) {
-            expect(() => encoded(clusterId, name, request(4)), `${name} with 4 colours`).not.to.throw();
-            expect(() => encoded(clusterId, name, request(3)), `${name} with 3 colours`).to.throw(/too short/);
-            expect(() => encoded(clusterId, name, request(5)), `${name} with 5 colours`).to.throw(/too long/);
+            expect(() => encoded(clusterId, name, request(4)), `${name} with 4 colors`).not.to.throw();
+            expect(() => encoded(clusterId, name, request(3)), `${name} with 3 colors`).to.throw(/too short/);
+            expect(() => encoded(clusterId, name, request(5)), `${name} with 5 colors`).to.throw(/too long/);
         }
-        // Colours stay optional.
+        // Colors stay optional.
         expect(() => encoded(0x1312fc05, "setPresetsEffect", { apply: 1, effectId: 42 })).not.to.throw();
 
-        const music = (count: number) => ({ on: true, effectId: 85, palette: colours(count) });
+        const music = (count: number) => ({ on: true, effectId: 85, palette: colors(count) });
         expect(() => encoded(0x1312fc01, "setMicMusicMode", music(16))).not.to.throw();
         expect(() => encoded(0x1312fc01, "setMicMusicMode", music(17))).to.throw(/too long/);
     });
 
-    it("accepts any colour list in a reply", () => {
+    it("decodes a reply with any number of colors, as the controller does", () => {
         const reply = cluster(0x1312fc05).commands.find(model => model.name === "getCurrentEffectResponse");
-        // {0: {0: 42, 2: [{3: 42, 6: [1, 2]}]}}: a reply with 2 colours
+        // {0: {0: 42, 2: [{3: 42, 6: [1, 2]}]}}: a reply with 2 colors
         const tlv = Bytes.fromHex("153500" + "24002a" + "360215" + "24032a" + "3606" + "04010402" + "1818181818");
-        expect(TlvOfModel(reply!).decode(tlv)).to.deep.equal({
+        expect(TlvOfModel(reply!).decodeTlv(TlvAny.decode(tlv))).to.deep.equal({
             effect: { effectId: 42, effectParams: [{ mode: 42, color: [1, 2] }] },
         });
     });
